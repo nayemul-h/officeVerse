@@ -28,8 +28,9 @@ public class MovementSocket extends TextWebSocketHandler {
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
 
         String[] parts = message.getPayload().split(":");
-        if (parts.length != 3) {
-            session.sendMessage(new TextMessage("Invalid format. Use playerId:x:y"));
+        // Allow 3 (legacy), 4 (name), or 5 parts (name + skin)
+        if (parts.length < 3 || parts.length > 5) {
+            session.sendMessage(new TextMessage("Invalid format. Use playerId:x:y[:name][:skin]"));
             return;
         }
 
@@ -37,20 +38,20 @@ public class MovementSocket extends TextWebSocketHandler {
             Long playerId = Long.parseLong(parts[0]);
             int x = Integer.parseInt(parts[1]);
             int y = Integer.parseInt(parts[2]);
+            String name = (parts.length >= 4) ? parts[3] : "Unknown";
+            String skin = (parts.length == 5) ? parts[4] : "0xffffff"; // Default white/original
 
             // Map session to player ID
             sessionToPlayerId.put(session.getId(), playerId);
 
-            // DB interactions removed for performance and to solve
-            // StaleObjectStateException.
-            // Using in-memory broadcast only for this prototype.
-
-            // System.out.println("Broadcasting to " + sessions.size() + " sessions");
-            // broadcast to other players in the same room
+            // Broadcast to other players
             for (WebSocketSession s : sessions.values()) {
                 if (s.isOpen()) {
                     try {
-                        s.sendMessage(new TextMessage("Broadcast:" + playerId + ":" + x + ":" + y));
+                        // Forward the full message
+                        // Sending: Broadcast:id:x:y:name:skin
+                        s.sendMessage(
+                                new TextMessage("Broadcast:" + playerId + ":" + x + ":" + y + ":" + name + ":" + skin));
                     } catch (Exception e) {
                         System.out.println("Error broadcasting movement: " + e.getMessage());
                     }
