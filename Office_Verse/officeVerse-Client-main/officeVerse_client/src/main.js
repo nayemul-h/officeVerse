@@ -27,6 +27,7 @@
 //  new Game();
 //};
 import * as Phaser from 'https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.esm.js';
+import BootScene from './game/scenes/BootScene.js';
 import OfficeScene from './game/scenes/OfficeScene.js';
 
 const config = {
@@ -44,7 +45,7 @@ const config = {
             debug: false
         }
     },
-    scene: [OfficeScene]
+    scene: [BootScene, OfficeScene]
 };
 
 const game = new Phaser.Game(config);

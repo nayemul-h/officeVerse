@@ -7,6 +7,14 @@ export default class OfficeScene extends Phaser.Scene {
         super('OfficeScene');
         this.otherPlayers = {};
     }
+
+    init(data) {
+        this.myPlayerName = data.name || "Player";
+        this.myPlayerId = data.id || Math.floor(Math.random() * 100000);
+        this.myPlayerSkin = data.skin || "0xffffff";
+        console.log(`Initialized with Name: ${this.myPlayerName}, ID: ${this.myPlayerId}, Skin: ${this.myPlayerSkin}`);
+    }
+
     preload() {
         // Load exported JSON map
         this.load.tilemapTiledJSON('office_map', 'assets/maps/office_map.json');
@@ -32,15 +40,20 @@ export default class OfficeScene extends Phaser.Scene {
     }
 
     create() {
-        // Debug
-
-
-        // Generate Random Player ID
-        this.myPlayerId = Math.floor(Math.random() * 100000);
-        console.log("My Player ID:", this.myPlayerId);
-
         // Initialize Chat
+        // We pass Name + ID to chat init if possible, 
+        // but current ChatModule might only take ID. We'll update UI manually later.
         initChat(this.myPlayerId);
+
+        // Update Chat UI Header or System Message
+        const personalHistory = document.getElementById('personal-history');
+        if (personalHistory) {
+            const msg = document.createElement('div');
+            msg.className = 'message system';
+            msg.innerText = `Logged in as ${this.myPlayerName} (ID: ${this.myPlayerId})`;
+            personalHistory.appendChild(msg);
+        }
+
 
         // Debug Text
         this.debugText = this.add.text(10, 10, 'Connecting...', { font: '16px Courier', fill: '#00ff00', backgroundColor: '#000000' });
@@ -60,14 +73,16 @@ export default class OfficeScene extends Phaser.Scene {
 
         connectMovement(this, (data) => {
             // Handle Messages
-            // Format: "Broadcast:id:x:y"
+            // Format: "Broadcast:id:x:y:name:skin"
             const parts = data.split(':');
             if (parts[0] === 'Broadcast') {
                 const id = parseInt(parts[1]);
                 const x = parseInt(parts[2]);
                 const y = parseInt(parts[3]);
+                const name = parts[4] || "Unknown";
+                const skin = parts[5] || "0xffffff";
 
-                this.handleRemoteMovement(id, x, y);
+                this.handleRemoteMovement(id, x, y, name, skin);
 
                 // Short update for debug
                 this.debugText.setText(`ID: ${this.myPlayerId}\nRX: P${id} at ${x},${y}`);
@@ -75,7 +90,8 @@ export default class OfficeScene extends Phaser.Scene {
                 const id = parseInt(parts[1]);
                 console.log("Player Left:", id);
                 if (this.otherPlayers[id]) {
-                    this.otherPlayers[id].destroy();
+                    this.otherPlayers[id].sprite.destroy();
+                    if (this.otherPlayers[id].nameText) this.otherPlayers[id].nameText.destroy();
                     delete this.otherPlayers[id];
                     this.debugText.setText(`Player ${id} Left`);
                 }
@@ -84,11 +100,11 @@ export default class OfficeScene extends Phaser.Scene {
             }
         });
 
-        // 💓 Heartbeat: Send position every 1s to ensure new players see us
-        // Using setInterval so it runs even if tab is backgrounded (browser throttles to ~1s)
+        // 💓 Heartbeat: Send position + name + skin every 1s
         setInterval(() => {
             if (this.player && this.player.body) {
-                sendMovement(this.myPlayerId + ":" + Math.round(this.player.x) + ":" + Math.round(this.player.y));
+                // Send Name as 4th, Skin as 5th parameter
+                sendMovement(this.myPlayerId + ":" + Math.round(this.player.x) + ":" + Math.round(this.player.y) + ":" + this.myPlayerName + ":" + this.myPlayerSkin);
             }
         }, 1000);
 
@@ -115,14 +131,17 @@ export default class OfficeScene extends Phaser.Scene {
         collision.setVisible(false)
         // Add player
         this.player = this.physics.add.sprite(200, 200, 'Owlet_Monster_Idle', 0);
-        // 🔴 FORCE A VISIBLE FRAME
-        //this.player.setFrame(0);
         this.player.setScale(2);
-        //this.player.setOrigin(0.5, 1);
-        // 🔑 SHRINK BODY TO FEET AREA
-        //this.player.body.setSize(80, 90); ///90
-        //this.player.body.setOffset(88, 166); //166
-        //this.player.setDepth(1000);
+        this.player.setTint(this.myPlayerSkin); // Apply Skin
+
+        // Add Name Tag for Self
+        this.playerNameText = this.add.text(200, 170, this.myPlayerName, {
+            font: '14px Arial',
+            fill: '#ffffff',
+            stroke: '#000000',
+            strokeThickness: 3
+        }).setOrigin(0.5);
+        this.playerNameText.setDepth(1001);
 
         this.physics.add.collider(this.player, collision);
         // Camera follow player
@@ -215,7 +234,7 @@ export default class OfficeScene extends Phaser.Scene {
         }
         else if (this.cursors.right.isDown) {
             body.setVelocityX(speed);
-            this.player.setFlipX(false); // 🔑 FIX
+            this.player.setFlipX(false);
             anim = 'walk-right';
         }
         else if (this.cursors.up.isDown) {
@@ -232,9 +251,15 @@ export default class OfficeScene extends Phaser.Scene {
         }
         this.player.setDepth(this.player.y);
 
+        // Update Name Tag Position
+        if (this.playerNameText) {
+            this.playerNameText.setPosition(this.player.x, this.player.y - 40);
+            this.playerNameText.setDepth(this.player.y + 1000);
+        }
+
         // Network Update
         if (Math.abs(body.velocity.x) > 0 || Math.abs(body.velocity.y) > 0) {
-            sendMovement(this.myPlayerId + ":" + Math.round(this.player.x) + ":" + Math.round(this.player.y));
+            sendMovement(this.myPlayerId + ":" + Math.round(this.player.x) + ":" + Math.round(this.player.y) + ":" + this.myPlayerName + ":" + this.myPlayerSkin);
         }
 
         // Interaction Check
@@ -247,11 +272,11 @@ export default class OfficeScene extends Phaser.Scene {
 
         Object.keys(this.otherPlayers).forEach(id => {
             const other = this.otherPlayers[id];
-            if (!other) return;
+            if (!other || !other.sprite) return; // FIX: other is object {sprite, nameText}
 
-            const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, other.x, other.y);
+            const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, other.sprite.x, other.sprite.y);
             if (dist < minDist) {
-                closestPlayer = other;
+                closestPlayer = other.sprite;
                 // Determine Interaction target ID
                 closestPlayer.playerId = id;
             }
@@ -276,20 +301,38 @@ export default class OfficeScene extends Phaser.Scene {
             this.interactText.setVisible(false);
         }
     }
-    handleRemoteMovement(id, x, y) {
+    handleRemoteMovement(id, x, y, name, skin) {
         if (id === this.myPlayerId) return; // Ignore self
 
         if (this.otherPlayers[id]) {
             // Update existing sprite
-            this.otherPlayers[id].setPosition(x, y);
-            this.otherPlayers[id].setDepth(y);
+            this.otherPlayers[id].sprite.setPosition(x, y);
+            this.otherPlayers[id].sprite.setDepth(y);
+            this.otherPlayers[id].sprite.setTint(skin); // Update skin just in case
+
+            // Update existing name tag
+            if (this.otherPlayers[id].nameText) {
+                this.otherPlayers[id].nameText.setPosition(x, y - 40);
+                this.otherPlayers[id].nameText.setDepth(y + 1000);
+            }
         } else {
             // Create new sprite
-            console.log("Creating new player sprite for ID:", id);
-            const otherPlayer = this.physics.add.sprite(x, y, 'Owlet_Monster_Idle', 0);
-            otherPlayer.setScale(2);
-            otherPlayer.setDepth(y);
-            this.otherPlayers[id] = otherPlayer;
+            console.log("Creating new player sprite for ID:", id, "Name:", name, "Skin:", skin);
+            const otherSprite = this.physics.add.sprite(x, y, 'Owlet_Monster_Idle', 0);
+            otherSprite.setScale(2);
+            otherSprite.setDepth(y);
+            otherSprite.setTint(skin); // Apply Skin
+
+            // Create Name Tag
+            const nameText = this.add.text(x, y - 40, name, {
+                font: '14px Arial',
+                fill: '#ffffff',
+                stroke: '#000000',
+                strokeThickness: 3
+            }).setOrigin(0.5);
+            nameText.setDepth(y + 1000);
+
+            this.otherPlayers[id] = { sprite: otherSprite, nameText: nameText };
         }
     }
 }
