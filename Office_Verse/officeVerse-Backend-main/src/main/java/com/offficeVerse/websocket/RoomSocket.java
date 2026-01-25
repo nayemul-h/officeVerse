@@ -2,6 +2,7 @@ package com.offficeVerse.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.offficeVerse.model.Room;
+import com.offficeVerse.model.Player;
 import com.offficeVerse.service.RoomService;
 import com.offficeVerse.service.PlayerService;
 import org.springframework.stereotype.Component;
@@ -61,6 +62,9 @@ public class RoomSocket extends TextWebSocketHandler {
                 case "joinRoom":
                     handleJoinRoom(session, data);
                     break;
+                case "joinRoomByCode":
+                    handleJoinRoomByCode(session, data);
+                    break;
                 case "leaveRoom":
                     handleLeaveRoom(session, data);
                     break;
@@ -83,9 +87,22 @@ public class RoomSocket extends TextWebSocketHandler {
     }
 
     private void handleJoin(WebSocketSession session, Map<String, Object> data) throws Exception {
-        Long playerId = Long.parseLong(data.get("playerId").toString());
+        String playerName = data.containsKey("playerName") ? data.get("playerName").toString() : "Anonymous";
+
+        // Create player in database to get a valid ID
+        Player player = playerService.createPlayer(playerName, null);
+        Long playerId = player.getId();
+
         sessionPlayerMap.put(session.getId(), playerId);
-        System.out.println("Player " + playerId + " connected to room socket");
+        System.out.println("Player " + playerName + " (ID: " + playerId + ") connected to room socket");
+
+        // Send back the confirmed playerId to the client
+        Map<String, Object> response = new HashMap<>();
+        response.put("type", "registered");
+        Map<String, Object> responseData = new HashMap<>();
+        responseData.put("playerId", playerId);
+        response.put("data", responseData);
+        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
     }
 
     private void handleSubscribeRoomList(WebSocketSession session) throws Exception {
@@ -133,6 +150,48 @@ public class RoomSocket extends TextWebSocketHandler {
 
         // Add player to room
         // You'll need to implement addPlayerToRoom in RoomService
+        boolean success = roomService.addPlayerToRoom(roomId, playerId, playerService);
+
+        if (!success) {
+            sendError(session, "Failed to join room (might be full)");
+            return;
+        }
+
+        // Track session in room
+        roomSessions.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet()).add(session);
+        sessionRoomMap.put(session.getId(), roomId);
+
+        // Send success to player
+        Map<String, Object> response = new HashMap<>();
+        response.put("type", "joinedRoom");
+        Map<String, Object> responseData = new HashMap<>();
+        responseData.put("room", convertRoomToMap(room));
+        responseData.put("players", roomService.getPlayersInRoom(roomId));
+        response.put("data", responseData);
+        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
+
+        // Notify others in room
+        Map<String, Object> broadcast = new HashMap<>();
+        broadcast.put("type", "playerJoinedRoom");
+        Map<String, Object> broadcastData = new HashMap<>();
+        broadcastData.put("playerId", playerId);
+        broadcastData.put("playerName", playerService.getPlayer(playerId).getName());
+        broadcast.put("data", broadcastData);
+
+        broadcastToRoom(roomId, objectMapper.writeValueAsString(broadcast), session.getId());
+    }
+
+    private void handleJoinRoomByCode(WebSocketSession session, Map<String, Object> data) throws Exception {
+        String code = (String) data.get("joinCode");
+        Long playerId = sessionPlayerMap.get(session.getId());
+
+        Room room = roomService.getRoomByCode(code);
+        if (room == null) {
+            sendError(session, "Invalid join code");
+            return;
+        }
+
+        Long roomId = room.getId();
         boolean success = roomService.addPlayerToRoom(roomId, playerId, playerService);
 
         if (!success) {
@@ -291,6 +350,7 @@ public class RoomSocket extends TextWebSocketHandler {
         map.put("maxPlayers", room.getMaxPlayers());
         map.put("playerCount", room.getPlayers() != null ? room.getPlayers().size() : 0);
         map.put("isPrivate", room.isPrivate());
+        map.put("joinCode", room.getJoinCode());
         return map;
     }
 
@@ -304,20 +364,28 @@ public class RoomSocket extends TextWebSocketHandler {
         if (roomId != null) {
             Long playerId = sessionPlayerMap.get(session.getId());
             if (playerId != null) {
-                roomService.removePlayerFromRoom(roomId, playerId);
+                // DO NOT remove player from room here. RoomSocket is ephemeral for login.
+                // Gameplay handles presence via other sockets.
+                // roomService.removePlayerFromRoom(roomId, playerId);
 
-                // Notify others
-                Map<String, Object> broadcast = new HashMap<>();
-                broadcast.put("type", "playerLeftRoom");
-                Map<String, Object> broadcastData = new HashMap<>();
-                broadcastData.put("playerId", playerId);
-                broadcast.put("data", broadcastData);
+                // Notify others (optional, maybe we don't even want to notify 'left' if they
+                // are just switching sockets)
+                // But generally, 'left' might be useful if they actually closed the tab?
+                // For now, disabling auto-remove is key to persistence.
 
-                try {
-                    broadcastToRoom(roomId, objectMapper.writeValueAsString(broadcast), null);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+                /*
+                 * Map<String, Object> broadcast = new HashMap<>();
+                 * broadcast.put("type", "playerLeftRoom");
+                 * Map<String, Object> broadcastData = new HashMap<>();
+                 * broadcastData.put("playerId", playerId);
+                 * broadcast.put("data", broadcastData);
+                 * 
+                 * try {
+                 * broadcastToRoom(roomId, objectMapper.writeValueAsString(broadcast), null);
+                 * } catch (Exception e) {
+                 * e.printStackTrace();
+                 * }
+                 */
             }
 
             Set<WebSocketSession> sessions = roomSessions.get(roomId);
