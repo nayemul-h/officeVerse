@@ -14,6 +14,7 @@ public class Player {
 
     @ManyToOne
     @JoinColumn(name = "room_id")
+    @com.fasterxml.jackson.annotation.JsonIgnore
     private Room room;
 
     public Player(String name, Room room) {

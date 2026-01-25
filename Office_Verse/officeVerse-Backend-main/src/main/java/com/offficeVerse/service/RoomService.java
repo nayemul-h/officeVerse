@@ -7,7 +7,10 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 
+import org.springframework.transaction.annotation.Transactional;
+
 @Service
+@Transactional("transactionManager")
 public class RoomService {
 
     private final RoomRepository roomRepository;
@@ -21,9 +24,12 @@ public class RoomService {
         return roomRepository.save(room);
     }
 
-
     public Room getRoomByName(String name) {
-        return roomRepository.findByName(name);
+        Room room = roomRepository.findByName(name);
+        if (room != null) {
+            room.getPlayers().size(); // Initialize lazy collection
+        }
+        return room;
     }
 
     public void deleteRoom(Long id) {
@@ -44,9 +50,36 @@ public class RoomService {
         room.setMaxPlayers(maxPlayers);
         room.setPrivate(isPrivate);
         room.setHostId(hostId);
+        room.setJoinCode(generateUniqueJoinCode());
         room.setPlayers(new ArrayList<>());
         // Save to database
-        return roomRepository.save(room);
+        Room savedRoom = roomRepository.save(room);
+        savedRoom.getPlayers().size(); // Initialize
+        return savedRoom;
+    }
+
+    public Room getRoomByCode(String code) {
+        Room room = roomRepository.findByJoinCode(code);
+        if (room != null) {
+            room.getPlayers().size(); // Initialize lazy collection
+        }
+        return room;
+    }
+
+    private String generateUniqueJoinCode() {
+        String characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Removed ambiguous characters
+        StringBuilder code = new StringBuilder();
+        Random rnd = new Random();
+        while (code.length() < 6) {
+            code.append(characters.charAt(rnd.nextInt(characters.length())));
+        }
+
+        // Ensure uniqueness (recursive)
+        if (getRoomByCode(code.toString()) != null) {
+            return generateUniqueJoinCode();
+        }
+
+        return code.toString();
     }
 
     public boolean addPlayerToRoom(Long roomId, Long playerId, PlayerService playerService) {
@@ -63,6 +96,8 @@ public class RoomService {
 
         if (!room.getPlayers().contains(player)) {
             room.getPlayers().add(player);
+            player.setRoom(room);
+            playerService.savePlayer(player);
             roomRepository.save(room);
         }
 
@@ -109,7 +144,10 @@ public class RoomService {
     }
 
     public Room getRoom(Long id) {
-        return roomRepository.findById(id).orElse(null);
+        Room room = roomRepository.findById(id).orElse(null);
+        if (room != null) {
+            room.getPlayers().size(); // Initialize lazy collection
+        }
+        return room;
     }
 }
-

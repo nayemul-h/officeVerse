@@ -4,56 +4,74 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class MovementSocket extends TextWebSocketHandler {
 
-    // Track sessions for broadcasting
-    private final Map<String, WebSocketSession> sessions = new HashMap<>();
-    // Track player ID per session for disconnect handling
-    private final Map<String, Long> sessionToPlayerId = new HashMap<>();
+    // Track sessions by Room ID: Map<RoomID, Map<SessionID, WebSocketSession>>
+    private final Map<Long, Map<String, WebSocketSession>> roomSessions = new ConcurrentHashMap<>();
+
+    // Track player info per session: Map<SessionID, PlayerInfo>
+    private final Map<String, PlayerSessionInfo> sessionInfo = new ConcurrentHashMap<>();
+
+    private static class PlayerSessionInfo {
+        Long playerId;
+        Long roomId;
+
+        PlayerSessionInfo(Long playerId, Long roomId) {
+            this.playerId = playerId;
+            this.roomId = roomId;
+        }
+    }
 
     public MovementSocket() {
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-        System.out.println("WebSocket connected: " + session.getId());
-        sessions.put(session.getId(), session);
+        System.out.println("Movement WebSocket connected: " + session.getId());
     }
 
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
 
         String[] parts = message.getPayload().split(":");
-        // Allow 3 (legacy), 4 (name), or 5 parts (name + skin)
-        if (parts.length < 3 || parts.length > 5) {
-            session.sendMessage(new TextMessage("Invalid format. Use playerId:x:y[:name][:skin]"));
+        // Format: roomId:playerId:x:y:name:skin:anim:flip
+        if (parts.length < 4 || parts.length > 8) {
+            session.sendMessage(new TextMessage("Invalid format. Use roomId:playerId:x:y[:name][:skin][:anim][:flip]"));
             return;
         }
 
         try {
-            Long playerId = Long.parseLong(parts[0]);
-            int x = Integer.parseInt(parts[1]);
-            int y = Integer.parseInt(parts[2]);
-            String name = (parts.length >= 4) ? parts[3] : "Unknown";
-            String skin = (parts.length == 5) ? parts[4] : "0xffffff"; // Default white/original
+            Long roomId = Long.parseLong(parts[0]);
+            Long playerId = Long.parseLong(parts[1]);
+            int x = Integer.parseInt(parts[2]);
+            int y = Integer.parseInt(parts[3]);
+            String name = (parts.length >= 5) ? parts[4] : "Unknown";
+            String skin = (parts.length >= 6) ? parts[5] : "0xffffff";
+            String anim = (parts.length >= 7) ? parts[6] : "idle";
+            String flip = (parts.length == 8) ? parts[7] : "0";
 
-            // Map session to player ID
-            sessionToPlayerId.put(session.getId(), playerId);
+            // Register session in room if not already
+            if (!sessionInfo.containsKey(session.getId())) {
+                sessionInfo.put(session.getId(), new PlayerSessionInfo(playerId, roomId));
+                roomSessions.computeIfAbsent(roomId, k -> new ConcurrentHashMap<>()).put(session.getId(), session);
+            }
 
-            // Broadcast to other players
-            for (WebSocketSession s : sessions.values()) {
-                if (s.isOpen()) {
-                    try {
-                        // Forward the full message
-                        // Sending: Broadcast:id:x:y:name:skin
-                        s.sendMessage(
-                                new TextMessage("Broadcast:" + playerId + ":" + x + ":" + y + ":" + name + ":" + skin));
-                    } catch (Exception e) {
-                        System.out.println("Error broadcasting movement: " + e.getMessage());
+            // Broadcast only to players in the same room
+            Map<String, WebSocketSession> peers = roomSessions.get(roomId);
+            if (peers != null) {
+                TextMessage broadcastMsg = new TextMessage("Broadcast:" + playerId + ":" + x + ":" + y + ":" + name
+                        + ":" + skin + ":" + anim + ":" + flip);
+                for (WebSocketSession s : peers.values()) {
+                    if (s.isOpen()) {
+                        try {
+                            s.sendMessage(broadcastMsg);
+                        } catch (Exception e) {
+                            System.out.println("Error broadcasting movement: " + e.getMessage());
+                        }
                     }
                 }
             }
@@ -69,23 +87,25 @@ public class MovementSocket extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
-        System.out.println("WebSocket disconnected: " + session.getId());
+        System.out.println("Movement WebSocket disconnected: " + session.getId());
 
-        Long playerId = sessionToPlayerId.get(session.getId());
-        if (playerId != null) {
-            System.out.println("Player " + playerId + " left. Broadcasting disconnect.");
-            for (WebSocketSession s : sessions.values()) {
-                if (s.isOpen()) { // Don't send to self (already closed)
-                    try {
-                        s.sendMessage(new TextMessage("PlayerLeft:" + playerId));
-                    } catch (Exception e) {
-                        System.out.println("Error broadcasting left: " + e.getMessage());
+        PlayerSessionInfo info = sessionInfo.remove(session.getId());
+        if (info != null) {
+            Map<String, WebSocketSession> peers = roomSessions.get(info.roomId);
+            if (peers != null) {
+                peers.remove(session.getId());
+                if (peers.isEmpty()) {
+                    roomSessions.remove(info.roomId);
+                } else {
+                    // Notify others in room
+                    TextMessage leftMsg = new TextMessage("PlayerLeft:" + info.playerId);
+                    for (WebSocketSession s : peers.values()) {
+                        if (s.isOpen()) {
+                            s.sendMessage(leftMsg);
+                        }
                     }
                 }
             }
         }
-
-        sessions.remove(session.getId());
-        sessionToPlayerId.remove(session.getId());
     }
 }
